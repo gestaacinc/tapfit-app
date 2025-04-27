@@ -1,0 +1,17 @@
+/* src/components/Footer.css */
+.app-footer {
+    padding: 10px 20px;
+    /* Add some padding */
+    margin-top: auto;
+    /* THIS IS IMPORTANT for sticking to bottom with flexbox */
+    background-color: #f1f1f1;
+    /* Light grey background */
+    text-align: center;
+    /* Center the text */
+    font-size: 0.9em;
+    /* Slightly smaller font */
+    color: #555;
+    /* Medium grey text color */
+    border-top: 1px solid #ddd;
+    /* Optional top border */
+}
