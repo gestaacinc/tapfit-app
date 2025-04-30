@@ -12,396 +12,354 @@ import {
     Heading,
     useToast,
     Progress,
-    Circle, // For visual countdown circle
-    ScaleFade // For countdown animation
+    Circle,
+    ScaleFade
 } from '@chakra-ui/react';
-
-// TensorFlow.js and Pose Detection imports
 import * as tf from '@tensorflow/tfjs-core';
-import '@tensorflow/tfjs-backend-webgl'; // Register WebGL backend
+import '@tensorflow/tfjs-backend-webgl';
 import * as poseDetection from '@tensorflow-models/pose-detection';
-
-// Import measurement data
 import measurementData from '../data/data.json';
 
-// Keypoints mapping (using MoveNet indices)
 const KeypointIndices = {
-    NOSE: 0, LEFT_EYE: 1, RIGHT_EYE: 2, LEFT_EAR: 3, RIGHT_EAR: 4,
-    LEFT_SHOULDER: 5, RIGHT_SHOULDER: 6, LEFT_ELBOW: 7, RIGHT_ELBOW: 8,
-    LEFT_WRIST: 9, RIGHT_WRIST: 10, LEFT_HIP: 11, RIGHT_HIP: 12,
-    LEFT_KNEE: 13, RIGHT_KNEE: 14, LEFT_ANKLE: 15, RIGHT_ANKLE: 16
+    NOSE: 0, LEFT_SHOULDER: 5, RIGHT_SHOULDER: 6,
+    LEFT_HIP: 11, RIGHT_HIP: 12,
+    LEFT_KNEE: 13, RIGHT_KNEE: 14,
+    LEFT_ANKLE: 15, RIGHT_ANKLE: 16
 };
 const REQUIRED_KEYPOINTS = [
-    KeypointIndices.NOSE, KeypointIndices.LEFT_SHOULDER, KeypointIndices.RIGHT_SHOULDER,
-    KeypointIndices.LEFT_HIP, KeypointIndices.RIGHT_HIP, KeypointIndices.LEFT_KNEE,
-    KeypointIndices.RIGHT_KNEE, KeypointIndices.LEFT_ANKLE, KeypointIndices.RIGHT_ANKLE
+    KeypointIndices.NOSE,
+    KeypointIndices.LEFT_SHOULDER, KeypointIndices.RIGHT_SHOULDER,
+    KeypointIndices.LEFT_HIP, KeypointIndices.RIGHT_HIP,
+    KeypointIndices.LEFT_KNEE, KeypointIndices.RIGHT_KNEE,
+    KeypointIndices.LEFT_ANKLE, KeypointIndices.RIGHT_ANKLE
 ];
 const MIN_KEYPOINT_SCORE = 0.3;
-const COUNTDOWN_SECONDS = 5; // How long to hold the pose during countdown
-const PRE_COUNTDOWN_DELAY = 1500; // Delay in ms after pose detected before countdown starts
+const COUNTDOWN_SECONDS = 5;
+const PRE_COUNTDOWN_DELAY = 1500;
 
-// Accept onNavigate as a prop
 function CameraPage({ onNavigate }) {
-    // Refs
-    const videoElementRef = useRef(null);
+    const videoRef = useRef(null);
     const requestRef = useRef(null);
     const detectorRef = useRef(null);
-    const countdownIntervalRef = useRef(null); // Ref for countdown interval
-    const preCountdownTimeoutRef = useRef(null); // Ref for pre-countdown delay timeout
+    const countdownIntervalRef = useRef(null);
+    const preCountdownTimeoutRef = useRef(null);
 
-    // State variables
     const [isCameraLoading, setIsCameraLoading] = useState(true);
     const [cameraError, setCameraError] = useState(null);
     const [stream, setStream] = useState(null);
-    const [isVideoElementReady, setIsVideoElementReady] = useState(false);
+    const [isVideoReady, setIsVideoReady] = useState(false);
     const [isModelLoading, setIsModelLoading] = useState(false);
     const [feedbackMessage, setFeedbackMessage] = useState("Initializing camera...");
     const [captureStage, setCaptureStage] = useState('INITIALIZING');
-    const [isPoseValid, setIsPoseValid] = useState(false); // Tracks if current pose meets criteria
-    const [countdown, setCountdown] = useState(null); // State for countdown number (null when inactive)
-    const toast = useToast();
-    const [poseModel, setPoseModel] = useState(null); // Using boolean placeholder for loaded model
+    const [isPoseValid, setIsPoseValid] = useState(false);
+    const [countdown, setCountdown] = useState(null);
 
-    // --- Utility Functions ---
+    const toast = useToast();
+
     const stopCountdown = useCallback(() => {
-        // Clear the main countdown interval
         if (countdownIntervalRef.current) {
             clearInterval(countdownIntervalRef.current);
             countdownIntervalRef.current = null;
-            console.log("Countdown interval cleared.");
         }
-        // Clear the pre-countdown delay timeout
         if (preCountdownTimeoutRef.current) {
             clearTimeout(preCountdownTimeoutRef.current);
             preCountdownTimeoutRef.current = null;
-            console.log("Pre-countdown timeout cleared.");
         }
-        // Reset countdown state
         setCountdown(null);
     }, []);
 
-    // --- Camera Handling ---
     const requestCamera = useCallback(async () => {
-        setIsCameraLoading(true); setCameraError(null);
+        setIsCameraLoading(true);
+        setCameraError(null);
         setFeedbackMessage("Requesting camera access...");
-        setCaptureStage('INITIALIZING'); setIsPoseValid(false);
-        stopCountdown(); // Stop any countdowns
+        setCaptureStage('INITIALIZING');
+        setIsPoseValid(false);
+        stopCountdown();
 
-        setStream(currentStream => {
-            if (currentStream) {
-                currentStream.getTracks().forEach(track => track.stop());
-                console.log("Stopped previous stream inside requestCamera.");
-            }
-            return null;
-        });
+        if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+            setStream(null);
+        }
 
         try {
-            console.log("Requesting getUserMedia...");
-            const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-            console.log("getUserMedia successful.");
+            const newStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' },
+                audio: false
+            });
             setStream(newStream);
         } catch (err) {
-            console.error("Error accessing camera:", err);
-            let errorMsg = "Could not access camera. Please ensure permission is granted.";
-            if (err.name === "NotAllowedError") { errorMsg = "Camera permission denied."; }
-            else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") { errorMsg = "No suitable camera found."; }
-            else if (err.name === "NotReadableError" || err.name === "TrackStartError") { errorMsg = "Camera is already in use."; }
-            else if (err instanceof TypeError && err.message.includes("getUserMedia")) { errorMsg = "Camera requires secure connection (HTTPS)."; }
-            else { errorMsg = `Unexpected camera error: ${err.message}`; }
-            setCameraError(errorMsg); setFeedbackMessage("Error initializing camera.");
-            setIsCameraLoading(false); setCaptureStage('ERROR');
+            console.error(err);
+            let msg = "Could not access camera.";
+            if (err.name === "NotAllowedError") msg = "Camera permission denied.";
+            else if (err.name === "NotFoundError") msg = "No suitable camera found.";
+            else if (err.name === "NotReadableError") msg = "Camera already in use.";
+            else if (err instanceof TypeError) msg = "Secure connection required (HTTPS).";
+            setCameraError(msg);
+            setFeedbackMessage("Error initializing camera.");
+            setIsCameraLoading(false);
+            setCaptureStage('ERROR');
         }
-    }, [stopCountdown]);
+    }, [stream, stopCountdown]);
 
     useEffect(() => {
         requestCamera();
         return () => {
-            console.log("Cleanup: Unmounting, stopping stream");
-            setStream(currentStream => {
-                if (currentStream) { currentStream.getTracks().forEach(track => track.stop()); }
-                return null;
-            });
+            if (stream) stream.getTracks().forEach(t => t.stop());
             cancelAnimationFrame(requestRef.current);
-            stopCountdown(); // Use the cleanup utility
-            if (detectorRef.current) { detectorRef.current.dispose(); detectorRef.current = null; }
+            stopCountdown();
+            if (detectorRef.current) {
+                detectorRef.current.dispose();
+                detectorRef.current = null;
+            }
         };
-    }, [requestCamera, stopCountdown]);
+    }, [requestCamera, stopCountdown, stream]);
 
-    const videoCallbackRef = useCallback((node) => {
-        if (node !== null) {
-            console.log("Video element mounted.");
-            videoElementRef.current = node;
-            setIsVideoElementReady(true);
+    const videoCallbackRef = useCallback(node => {
+        if (node) {
+            videoRef.current = node;
+            setIsVideoReady(true);
         } else {
-            console.log("Video element unmounted.");
-            setIsVideoElementReady(false);
-            videoElementRef.current = null;
+            setIsVideoReady(false);
         }
     }, []);
 
-    // --- Pose Detection Setup ---
     const loadPoseDetectionModel = useCallback(async () => {
         if (detectorRef.current || cameraError || captureStage === 'ERROR' || isModelLoading) return;
         setIsModelLoading(true);
         setFeedbackMessage("Loading pose detection model...");
-        console.log("Loading MoveNet model...");
         try {
-            await tf.setBackend('webgl'); await tf.ready();
+            await tf.setBackend('webgl');
+            await tf.ready();
             const model = poseDetection.SupportedModels.MoveNet;
-            const modelUrl = 'https://tfhub.dev/google/tfjs-model/movenet/singlepose/lightning/4';
-            const detectorConfig = { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING, modelUrl: modelUrl };
-            const detector = await poseDetection.createDetector(model, detectorConfig);
+            const detector = await poseDetection.createDetector(model, {
+                modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+                modelUrl: 'https://tfhub.dev/google/tfjs-model/movenet/singlepose/lightning/4'
+            });
             detectorRef.current = detector;
-            console.log("MoveNet model loaded successfully.");
-            setIsModelLoading(false); setFeedbackMessage("Model loaded. Position for FRONT pose.");
+            setIsModelLoading(false);
+            setFeedbackMessage("Model loaded. Position for FRONT pose.");
             setCaptureStage('DETECTING_FRONT');
-        } catch (error) {
-            console.error("Error loading pose model:", error);
-            if (error instanceof TypeError && error.message.includes('fetch')) { setCameraError("Failed to load pose model due to network/CORS issue."); }
-            else { setCameraError("Failed to load pose detection model."); }
-            setFeedbackMessage("Error loading model."); setIsModelLoading(false); setCaptureStage('ERROR');
+        } catch (err) {
+            console.error(err);
+            setCameraError("Failed to load pose detection model.");
+            setFeedbackMessage("Error loading model.");
+            setIsModelLoading(false);
+            setCaptureStage('ERROR');
         }
     }, [cameraError, captureStage, isModelLoading]);
 
     useEffect(() => {
-        if (stream && isVideoElementReady && videoElementRef.current && !detectorRef.current && !isModelLoading) {
-            console.log("Attaching stream to video element.");
-            videoElementRef.current.srcObject = stream;
-            videoElementRef.current.onloadedmetadata = () => {
-                console.log("Video metadata loaded.");
-                setIsCameraLoading(false); setFeedbackMessage("Camera ready. Prepare for FRONT pose.");
-                setCaptureStage('FRONT_PROMPT'); loadPoseDetectionModel();
+        if (stream && isVideoReady && videoRef.current && !detectorRef.current && !isModelLoading) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.onloadedmetadata = () => {
+                setIsCameraLoading(false);
+                setFeedbackMessage("Camera ready. Prepare for FRONT pose.");
+                setCaptureStage('FRONT_PROMPT');
+                loadPoseDetectionModel();
             };
-            videoElementRef.current.onerror = (e) => { console.error("Video element error:", e); setCameraError("Video display error."); setCaptureStage('ERROR'); }
+            videoRef.current.onerror = e => {
+                console.error(e);
+                setCameraError("Video display error.");
+                setCaptureStage('ERROR');
+            };
         }
-    }, [stream, isVideoElementReady, loadPoseDetectionModel, isModelLoading]);
+    }, [stream, isVideoReady, isModelLoading, loadPoseDetectionModel]);
 
-
-    // --- Pose Processing & Validation ---
-
-    // Function to handle final processing and navigation
     const handleProcessing = useCallback(() => {
-        console.log("Processing results...");
         cancelAnimationFrame(requestRef.current);
         stopCountdown();
 
-        const storedHeight = localStorage.getItem('userHeight');
-        if (!storedHeight) {
-            console.error("Height not found in storage!");
-            toast({ title: "Error", description: "Could not retrieve height.", status: "error", duration: 3000, isClosable: true });
-            onNavigate('HEIGHT_INPUT'); return;
+        // clamp to nearest key
+        const stored = parseInt(localStorage.getItem('userHeight'), 10);
+        if (isNaN(stored)) {
+            toast({
+                title: "Error",
+                description: "Could not retrieve height.",
+                status: "error",
+                duration: 3000,
+                isClosable: true
+            });
+            onNavigate('HEIGHT_INPUT');
+            return;
         }
-        const heightKey = storedHeight;
-        let results = { height: storedHeight };
-        if (measurementData[heightKey]) {
-            const dataForHeight = measurementData[heightKey];
-            for (const measurementType in dataForHeight) {
-                const valuesArray = dataForHeight[measurementType];
-                if (valuesArray && valuesArray.length > 0) {
-                    const randomIndex = Math.floor(Math.random() * valuesArray.length);
-                    results[measurementType] = parseFloat(valuesArray[randomIndex].toFixed(2));
-                } else { results[measurementType] = 'N/A'; }
-            }
-        } else {
-            console.warn(`No measurement data found for height: ${heightKey}`);
-            results.Waist = 'N/A'; results.Hip = 'N/A';
-            results.Thigh = 'N/A'; results.BustChest = 'N/A';
-        }
-        console.log("Generated results:", results);
-        toast({ title: "Success!", description: "Poses captured successfully!", status: "success", duration: 2000, isClosable: true });
-        setTimeout(() => onNavigate('RESULTS', results), 1500);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [onNavigate, toast, stopCountdown]);
 
-    // Function to start the main countdown timer
+        const available = Object.keys(measurementData)
+            .map(h => parseInt(h, 10))
+            .filter(n => !isNaN(n))
+            .sort((a, b) => a - b);
+        const closest = available.reduce((prev, curr) =>
+            Math.abs(curr - stored) < Math.abs(prev - stored) ? curr : prev
+        );
+        const setForHeight = measurementData[closest.toString()] || {};
+
+        // build results object
+        const results = { height: stored };
+        for (const [type, arr] of Object.entries(setForHeight)) {
+            if (Array.isArray(arr)) {
+                const choices = arr.filter(v => v != null);
+                if (choices.length) {
+                    const pick = choices[Math.floor(Math.random() * choices.length)];
+                    results[type] = parseFloat(pick.toFixed(2));
+                    continue;
+                }
+            }
+            results[type] = 'N/A';
+        }
+
+        toast({
+            title: "Success!",
+            description: "Poses captured successfully!",
+            status: "success",
+            duration: 2000,
+            isClosable: true
+        });
+
+        setTimeout(() => onNavigate('RESULTS', results), 1500);
+    }, [onNavigate, stopCountdown, toast]);
+
     const startCountdown = useCallback((nextStage) => {
-        // Ensure pre-countdown timeout is cleared
         if (preCountdownTimeoutRef.current) {
             clearTimeout(preCountdownTimeoutRef.current);
             preCountdownTimeoutRef.current = null;
         }
-        // Ensure previous interval is cleared
         stopCountdown();
-
-        // Start the countdown state and message
         setCountdown(COUNTDOWN_SECONDS);
-        setFeedbackMessage(`Hold Pose: ${COUNTDOWN_SECONDS}`); // Initial message for countdown
+        setFeedbackMessage(`Hold Pose: ${COUNTDOWN_SECONDS}`);
 
-        // Start the interval timer
         countdownIntervalRef.current = setInterval(() => {
-            setCountdown(prevCountdown => {
-                if (prevCountdown === null) { stopCountdown(); return null; } // Safety check
-                const newCountdown = prevCountdown - 1;
-                if (newCountdown > 0) {
-                    setFeedbackMessage(`Hold Pose: ${newCountdown}`); // Update message
-                    return newCountdown; // Continue countdown
-                } else {
-                    // Countdown finished
-                    stopCountdown(); // Clear interval
-                    const poseType = captureStage === 'DETECTING_FRONT' ? 'FRONT' : 'SIDE';
-                    console.log(`${poseType} POSE CONFIRMED`);
-                    if (nextStage === 'SIDE_PROMPT') {
-                        setFeedbackMessage("Front pose captured! Prepare for SIDE pose.");
-                    } else {
-                        setFeedbackMessage("Side pose captured! Processing...");
-                        handleProcessing(); // Trigger final processing only after side pose
-                    }
-                    setCaptureStage(nextStage); // Move to the next stage
-                    setIsPoseValid(false); // Reset valid state for the next stage
-                    return null; // Reset countdown state
+            setCountdown(prev => {
+                if (prev === null) return null;
+                const next = prev - 1;
+                if (next > 0) {
+                    setFeedbackMessage(`Hold Pose: ${next}`);
+                    return next;
                 }
+                stopCountdown();
+                if (nextStage === 'SIDE_PROMPT') {
+                    setFeedbackMessage("Front pose captured! Prepare for SIDE pose.");
+                } else {
+                    setFeedbackMessage("Side pose captured! Processing...");
+                    handleProcessing();
+                }
+                setCaptureStage(nextStage);
+                setIsPoseValid(false);
+                return null;
             });
-        }, 1000); // Update every second
-    }, [stopCountdown, handleProcessing, captureStage]); // Dependencies
+        }, 1000);
+    }, [handleProcessing, stopCountdown]);
 
-    // Function to process the pose results from the detector
     const processPoseResults = useCallback((poses) => {
-        // Don't process if countdown is active or pre-countdown is running
         if (countdown !== null || preCountdownTimeoutRef.current !== null) return;
 
-        // Reset valid state if no longer valid, clear any timers
-        const resetPoseState = (message) => {
+        const resetPose = msg => {
             setIsPoseValid(false);
-            stopCountdown(); // Clears both countdown interval and pre-countdown timeout
-            setFeedbackMessage(message);
+            stopCountdown();
+            setFeedbackMessage(msg);
         };
 
-        // 1. Check if a pose exists
-        if (!poses || poses.length === 0) {
-            setFeedbackMessage(prev => {
-                const newMsg = "No person detected. Ensure you are fully visible.";
-                if (prev !== newMsg) { resetPoseState(newMsg); }
-                return newMsg;
-            });
+        if (!poses || !poses.length) {
+            resetPose("No person detected. Ensure you are fully visible.");
             return;
         }
 
-        // If we reach here, a pose was detected. Reset validity for this frame check.
-        setIsPoseValid(false); // Assume invalid for this frame until checks pass
-
-        const pose = poses[0];
-        const keypoints = pose.keypoints;
-        let visibleRequiredCount = 0;
-        for (const index of REQUIRED_KEYPOINTS) {
-            if (keypoints[index] && keypoints[index].score > MIN_KEYPOINT_SCORE) {
-                visibleRequiredCount++;
-            }
-        }
-
-        // 2. Check visibility
-        if (visibleRequiredCount < REQUIRED_KEYPOINTS.length) {
-            resetPoseState("Full body not visible or low confidence. Adjust position.");
+        const keypoints = poses[0].keypoints;
+        const visibleCount = REQUIRED_KEYPOINTS.filter(i =>
+            keypoints[i]?.score > MIN_KEYPOINT_SCORE
+        ).length;
+        if (visibleCount < REQUIRED_KEYPOINTS.length) {
+            resetPose("Full body not visible or low confidence. Adjust position.");
             return;
         }
 
-        // 3. Check orientation
-        const leftShoulder = keypoints[KeypointIndices.LEFT_SHOULDER];
-        const rightShoulder = keypoints[KeypointIndices.RIGHT_SHOULDER];
-        const leftHip = keypoints[KeypointIndices.LEFT_HIP];
-        const rightHip = keypoints[KeypointIndices.RIGHT_HIP];
-        if (!leftShoulder || !rightShoulder || !leftHip || !rightHip) {
-            resetPoseState("Cannot determine orientation. Adjust position.");
+        const Ls = keypoints[KeypointIndices.LEFT_SHOULDER];
+        const Rs = keypoints[KeypointIndices.RIGHT_SHOULDER];
+        const Lh = keypoints[KeypointIndices.LEFT_HIP];
+        const Rh = keypoints[KeypointIndices.RIGHT_HIP];
+        if (!Ls || !Rs || !Lh || !Rh) {
+            resetPose("Cannot determine orientation. Adjust position.");
             return;
         }
-        const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
-        const hipWidth = Math.abs(leftHip.x - rightHip.x);
-        console.log(`ShoulderW: ${shoulderWidth.toFixed(1)}, HipW: ${hipWidth.toFixed(1)}`);
-        const isLikelyFront = shoulderWidth > hipWidth * 0.8 && shoulderWidth > 50;
-        const isLikelySide = shoulderWidth < hipWidth * 0.7 || shoulderWidth < 50;
 
-        let poseMatchesStage = false;
-        let requiredPoseFeedback = "";
+        const shoulderWidth = Math.abs(Ls.x - Rs.x);
+        const hipWidth = Math.abs(Lh.x - Rh.x);
+        const isFront = shoulderWidth > hipWidth * 0.8 && shoulderWidth > 50;
+        const isSide = shoulderWidth < hipWidth * 0.7 || shoulderWidth < 50;
+
+        let match = false, msg = "Detecting pose...";
         if (captureStage === 'DETECTING_FRONT') {
-            poseMatchesStage = isLikelyFront;
-            requiredPoseFeedback = "Please face the camera directly.";
+            match = isFront;
+            msg = "Please face the camera directly.";
         } else if (captureStage === 'DETECTING_SIDE') {
-            poseMatchesStage = isLikelySide;
-            requiredPoseFeedback = "Please turn 90 degrees (side view).";
+            match = isSide;
+            msg = "Please turn 90 degrees (side view).";
         }
 
-        // 4. Handle matching pose
-        if (poseMatchesStage) {
-            // Only start pre-countdown if pose wasn't already considered valid
+        if (match) {
             if (!isPoseValid) {
-                console.log("Valid pose detected, starting pre-countdown delay...");
-                setIsPoseValid(true); // Mark as valid (for visual feedback)
-                setFeedbackMessage("Good Pose! Hold Still..."); // Set intermediate message
-
-                // Start the pre-countdown delay timer
+                setIsPoseValid(true);
+                setFeedbackMessage("Good Pose! Hold Still...");
                 preCountdownTimeoutRef.current = setTimeout(() => {
-                    console.log("Pre-countdown finished, starting main countdown.");
-                    preCountdownTimeoutRef.current = null; // Clear the ref
-                    // Determine next stage *after* the delay
+                    preCountdownTimeoutRef.current = null;
                     const nextStage = captureStage === 'DETECTING_FRONT' ? 'SIDE_PROMPT' : 'DONE';
-                    startCountdown(nextStage); // Start the main visual countdown
-                }, PRE_COUNTDOWN_DELAY); // Wait for the specified delay
+                    startCountdown(nextStage);
+                }, PRE_COUNTDOWN_DELAY);
             }
-            // If isPoseValid is already true, it means a timer (pre-countdown or main countdown) is active, do nothing here.
         } else {
-            // Pose doesn't match the required stage or became invalid
-            resetPoseState(requiredPoseFeedback || "Detecting pose...");
+            resetPose(msg);
         }
-    }, [captureStage, countdown, isPoseValid, startCountdown, stopCountdown]); // Dependencies
+    }, [captureStage, countdown, isPoseValid, startCountdown, stopCountdown]);
 
-
-    // --- Detection Loop ---
     const runPoseDetection = useCallback(async () => {
-        // Only run estimation if actively detecting and no countdowns are active
         if (
             (captureStage === 'DETECTING_FRONT' || captureStage === 'DETECTING_SIDE') &&
-            countdown === null && preCountdownTimeoutRef.current === null // Check both timers
+            countdown === null && preCountdownTimeoutRef.current === null
         ) {
-            if (detectorRef.current && videoElementRef.current && videoElementRef.current.readyState >= 2) {
+            if (detectorRef.current && videoRef.current.readyState >= 2) {
                 try {
-                    const poses = await detectorRef.current.estimatePoses(videoElementRef.current, { maxPoses: 1, flipHorizontal: false });
-                    processPoseResults(poses); // Process results
-                } catch (error) { console.error("Error during pose estimation:", error); }
+                    const poses = await detectorRef.current.estimatePoses(videoRef.current, { maxPoses: 1 });
+                    processPoseResults(poses);
+                } catch (err) {
+                    console.error(err);
+                }
             }
         }
-        // Continue the loop regardless of stage to allow state changes
         requestRef.current = requestAnimationFrame(runPoseDetection);
-    }, [captureStage, processPoseResults, countdown]); // Added countdown dependency
+    }, [captureStage, processPoseResults, countdown]);
 
-    // Effect to start/stop the detection loop
     useEffect(() => {
-        if (detectorRef.current && videoElementRef.current && !isCameraLoading && !isModelLoading && captureStage !== 'ERROR' && captureStage !== 'DONE') {
-            console.log(`Starting/Managing detection loop for stage: ${captureStage}`);
-            cancelAnimationFrame(requestRef.current); // Clear previous frame
-            requestRef.current = requestAnimationFrame(runPoseDetection); // Start loop
-        } else {
-            cancelAnimationFrame(requestRef.current); // Stop loop if conditions not met
-        }
-        return () => { cancelAnimationFrame(requestRef.current); } // Cleanup on unmount/dependency change
-    }, [captureStage, runPoseDetection, isCameraLoading, isModelLoading]);
-
-    // --- Effect to handle pause during SIDE_PROMPT ---
-    useEffect(() => {
-        let sidePromptTimeoutId = null;
-        if (captureStage === 'SIDE_PROMPT') {
-            console.log("In SIDE_PROMPT stage, waiting before detection...");
-            // Stop detection loop while prompting
+        if (detectorRef.current && videoRef.current && !isCameraLoading && !isModelLoading && captureStage !== 'ERROR' && captureStage !== 'DONE') {
             cancelAnimationFrame(requestRef.current);
-            sidePromptTimeoutId = setTimeout(() => {
-                console.log("SIDE_PROMPT timeout finished, moving to DETECTING_SIDE.");
-                setCaptureStage('DETECTING_SIDE'); // Trigger side detection
-            }, 1500); // Wait 1.5 seconds before starting side detection
+            requestRef.current = requestAnimationFrame(runPoseDetection);
+        } else {
+            cancelAnimationFrame(requestRef.current);
         }
-        // Cleanup timeout if stage changes or component unmounts
-        return () => clearTimeout(sidePromptTimeoutId);
-    }, [captureStage]); // Run when captureStage changes
+        return () => cancelAnimationFrame(requestRef.current);
+    }, [captureStage, isCameraLoading, isModelLoading, runPoseDetection]);
 
-    // --- Retake ---
+    useEffect(() => {
+        let timeout;
+        if (captureStage === 'SIDE_PROMPT') {
+            cancelAnimationFrame(requestRef.current);
+            timeout = setTimeout(() => {
+                setCaptureStage('DETECTING_SIDE');
+            }, 1500);
+        }
+        return () => clearTimeout(timeout);
+    }, [captureStage]);
+
     const handleRetake = useCallback(() => {
-        console.log("Retake requested");
-        cancelAnimationFrame(requestRef.current); // Stop detection loop
-        stopCountdown(); // Stop countdowns
-        setIsPoseValid(false); setCameraError(null);
-        if (detectorRef.current) { detectorRef.current.dispose(); detectorRef.current = null; }
+        cancelAnimationFrame(requestRef.current);
+        stopCountdown();
+        setIsPoseValid(false);
+        setCameraError(null);
+        if (detectorRef.current) {
+            detectorRef.current.dispose();
+            detectorRef.current = null;
+        }
         setIsModelLoading(false);
-        requestCamera(); // Re-request the camera stream
+        requestCamera();
     }, [requestCamera, stopCountdown]);
 
-    // --- Render JSX ---
     return (
         <Container maxW="container.xl" py={4}>
             <VStack spacing={4} w="100%">
@@ -423,35 +381,22 @@ function CameraPage({ onNavigate }) {
                 )}
 
                 {!cameraError && (
-                    <Box
-                        position="relative" width="100%" mx="auto"
-                        bg="gray.200" borderRadius="lg" overflow="hidden" boxShadow="lg"
-                        display={stream ? 'block' : 'none'}
-                    >
-                        <video
-                            ref={videoCallbackRef} autoPlay playsInline muted
-                            style={{ width: '100%', height: 'auto', display: 'block' }} // Removed transform flip
-                        />
+                    <Box position="relative" width="100%" mx="auto" bg="gray.200" borderRadius="lg" overflow="hidden" boxShadow="lg" display={stream ? 'block' : 'none'}>
+                        <video ref={videoCallbackRef} autoPlay playsInline muted style={{ width: '100%', height: 'auto', display: 'block' }} />
 
-                        {/* Countdown Overlay */}
                         <ScaleFade initialScale={0.9} in={countdown !== null}>
-                            <Circle
-                                position="absolute" top="50%" left="50%"
-                                transform="translate(-50%, -50%)" size="100px"
-                                bg="rgba(46, 204, 113, 0.8)" color="white"
-                                fontSize="4xl" fontWeight="bold" zIndex="20"
-                            >
+                            <Circle position="absolute" top="50%" left="50%" transform="translate(-50%,-50%)" size="100px" bg="rgba(46,204,113,0.8)" color="white" fontSize="4xl" fontWeight="bold" zIndex="20">
                                 {countdown}
                             </Circle>
                         </ScaleFade>
 
-                        {/* Feedback text overlay */}
                         {!isCameraLoading && stream && (
                             <Text
-                                position="absolute" bottom={{ base: "5px", md: "10px" }}
-                                left={{ base: "5px", md: "10px" }} right={{ base: "5px", md: "10px" }}
-                                // Green background only when pose is valid AND no countdowns are active
-                                bg={(isPoseValid && countdown === null && preCountdownTimeoutRef.current === null) ? "rgba(46, 204, 113, 0.8)" : "rgba(0,0,0,0.7)"}
+                                position="absolute"
+                                bottom={{ base: "5px", md: "10px" }}
+                                left={{ base: "5px", md: "10px" }}
+                                right={{ base: "5px", md: "10px" }}
+                                bg={(isPoseValid && countdown === null && preCountdownTimeoutRef.current === null) ? "rgba(46,204,113,0.8)" : "rgba(0,0,0,0.7)"}
                                 color="white" p={{ base: 1, md: 2 }} borderRadius="md"
                                 fontSize={{ base: "sm", md: "lg" }} textAlign="center" zIndex="10"
                                 transition="background-color 0.3s ease"
@@ -462,13 +407,11 @@ function CameraPage({ onNavigate }) {
                     </Box>
                 )}
 
-                {/* Retake Button */}
                 {(captureStage !== 'INITIALIZING' && captureStage !== 'ERROR' && !isCameraLoading && !isModelLoading) && (
                     <Button onClick={handleRetake} colorScheme="orange" size="lg" mt={4}>
                         Retake Poses
                     </Button>
                 )}
-
             </VStack>
         </Container>
     );
