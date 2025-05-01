@@ -8,7 +8,7 @@ function Footer() {
     return (
         <footer className="app-footer">
             {/* Use the text you provided, maybe add the dynamic year */}
-            DMMMSU BSFT {currentYear}
+            DMMMSU (BSTFT) {currentYear}
             {/* Or exactly as you typed: DMMMSU BSFT 2025 */}
         </footer>
     );
